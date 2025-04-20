@@ -10,9 +10,11 @@ import torch
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.docstore.document import Document
-from tqdm import tqdm
 from torch import sigmoid
 from collections import defaultdict
+from langchain.document_loaders import PyMuPDFLoader
+from langchain.vectorstores import Chroma
+from tqdm import tqdm
 
 
 def load_documents_from_folder(folder_path):
@@ -262,7 +264,6 @@ def process_pdfs_to_faiss_with_positions(pdf_dir, output_dir,
         metadata_list.extend(file_metadata)
 
     documents = create_chunks_with_metadata(texts, metadata_list, chunk_size, chunk_overlap)
-    print(documents)
     print(f"✅ 총 {len(documents)}개 청크 생성")
 
     embedding_model = HuggingFaceEmbeddings(model_name=embedding_model_name)
@@ -355,12 +356,6 @@ def get_qa_score(question, context, qa_tokenizer, qa_model):
         # relevance_score = outputs.logits.squeeze().item()
         relevance_score = sigmoid(outputs.logits).squeeze().item()
     return relevance_score
-
-
-from langchain.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
-import os
-from tqdm import tqdm
 
 
 def process_pdfs_to_chroma_with_positions(
@@ -465,3 +460,44 @@ def export_evidence_pdfs_beta(result, output_dir):
 
         except Exception as e:
             print(f"[Error] 처리 중 오류 발생: {e}")
+
+
+def langchain_process_pdfs_to_faiss_with_positions(pdf_dir, output_dir,
+                                         embedding_model_name="intfloat/multilingual-e5-small",
+                                         chunk_size=500, chunk_overlap=50):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    docs = []
+    for file in os.listdir(pdf_dir):
+        full_path = os.path.join(pdf_dir, file)
+        if os.path.isfile(full_path) and file.endswith(".pdf"):
+            print(f"📄 처리 중: {file}")
+            loader = PyMuPDFLoader(full_path)
+            _loader = loader.load()
+
+            for doc in _loader:
+                doc.page_content = doc.page_content.replace("\n", "")
+
+            docs.extend(_loader)
+        else:
+            print(f"[⚠️ 오류] PDF 파일 아님 또는 존재하지 않음: {full_path}")
+
+    if not docs:
+        print("⚠️ 유효한 PDF 문서가 없습니다.")
+        return
+
+    # 텍스트 분할
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    documents = splitter.split_documents(docs)
+    # print(documents)
+
+    print(f"✅ 총 {len(documents)}개 청크 생성")
+
+    # 임베딩 + 저장
+    embedding_model = HuggingFaceEmbeddings(model_name=embedding_model_name)
+    vector_db = FAISS.from_documents(documents, embedding_model)
+    vector_db.save_local(output_dir)
+
+    print(f"✅ 저장 완료: {output_dir}")
+    return vector_db
